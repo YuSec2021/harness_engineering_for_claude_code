@@ -2,31 +2,41 @@
 
 > Claude Code configuration for the GAN-inspired Planner → Generator → Evaluator harness.
 > This file extends AGENTS.md with Claude-specific subagent definitions, hooks, and SDK patterns.
+> **Do not contradict AGENTS.md** — resolve any apparent conflict in favor of AGENTS.md.
 
 ---
 
 ## Architecture Summary
 
-Three-agent GAN-style harness built on the **Anthropic Agent SDK**:
+Three-agent GAN-style harness following the four-phase SDD workflow from AGENTS.md:
 
 ```
-User prompt (1–4 sentences)
+User prompt
     │
     ▼
-┌─────────┐   planner-spec.json    ┌───────────────────────────────────┐
-│ Planner │ ──────────────────────▶│         Sprint Loop (N times)     │
-└─────────┘                        │                                   │
-  runs once                        │  sprint-contract.md negotiation   │
-                                   │        ┌───────────┐              │
-                                   │        │ Generator │              │
-                                   │        └─────┬─────┘              │
-                                   │              │ code + commit       │
-                                   │        ┌─────▼─────┐              │
-                                   │        │ Evaluator │ ◀── Playwright MCP
-                                   │        └─────┬─────┘              │
-                                   │              │ pass / fail+critique│
-                                   │        ◀─────┘                    │
-                                   └───────────────────────────────────┘
+[PLAN]  Planner ─── /speckit.specify → spec.md
+                     /speckit.plan   → plan.md + contracts/
+                     STOP: human review
+    │
+    ▼
+[TASK]  Planner ─── /speckit.tasks  → tasks.md
+                     STOP: human approval
+    │
+    ▼
+[IMPLEMENT] ┌──────────────────────────────────────┐
+            │  sprint-contract.md negotiation      │
+            │   ┌───────────┐                      │
+            │   │ Generator │ (one task at a time) │
+            │   └─────┬─────┘                      │
+            │         │ code + commit               │
+            │   ┌─────▼─────┐                      │
+            │   │ Evaluator │ ◀── Playwright MCP   │
+            │   └─────┬─────┘                      │
+            │         │ pass / fail+critique        │
+            └─────────┴──────────────────────────  ┘
+    │
+    ▼
+[CHECK] /speckit.analyze → feature complete
 ```
 
 ---
@@ -41,26 +51,31 @@ Subagents live in `.claude/agents/`. Each runs in its own isolated context.
 ---
 name: planner
 description: >
-  Use when the user provides a new product prompt (1–4 sentences) and needs
-  a full spec generated. Runs once per project. Produces planner-spec.json.
+  Use when the user provides a new feature request. Runs spec-kit commands to
+  produce spec.md, plan.md, and tasks.md. Stops for human review after each phase.
+  Never begins implementation.
 tools: Read, Write, Bash, WebFetch
 model: claude-opus-4-6
 ---
-You are a product architect. Your sole job is to turn a short user prompt into
-a complete, ambitious product spec.
+You are a product architect running the PLAN and TASK phases from AGENTS.md.
+
+PLAN phase:
+1. Run: uvx --from git+https://github.com/github/spec-kit.git specify init  (first time only)
+2. Execute /speckit.specify with user prompt → produces specs/[NNN-feature]/spec.md
+3. Review spec.md; ensure it captures the correct "what" and "why"
+4. Execute /speckit.plan → produces specs/[NNN-feature]/plan.md, research.md,
+   data-model.md, contracts/
+5. STOP — report artifact paths; do not proceed to tasks
+
+TASK phase (only after human confirms plan.md):
+1. Execute /speckit.tasks → produces specs/[NNN-feature]/tasks.md
+2. STOP — present tasks.md for human approval; do not begin implementation
 
 Rules:
-- Stay high-level: product context and architecture only. Never specify
-  implementation details — let Generator figure out the path.
-- Expand scope beyond what the user asked. Aim for 12–20 features across
-  8–12 sprints.
-- Read frontend-design/SKILL.md and embed a visual design language section
-  in the spec.
-- Look for opportunities to weave AI-native features into the product.
-- Output to planner-spec.json with this schema:
-  { "product": str, "design_language": str, "features": [...],
-    "sprints": [{ "id": int, "title": str, "features": [...] }] }
-- Write a brief executive summary to claude-progress.txt when done.
+- Stay high-level: "what" and "why" only. Let Generator own the code path.
+- Embed a visual design language section in plan.md for any frontend work.
+- Read memory/constitution.md (if present) before generating spec.
+- Write a brief summary to claude-progress.txt after each phase.
 ```
 
 ### `.claude/agents/generator.md`
@@ -69,38 +84,36 @@ Rules:
 ---
 name: generator
 description: >
-  Use for each sprint implementation. Reads the spec, negotiates a sprint
-  contract with the evaluator, implements features, commits, and updates
-  claude-progress.txt.
+  Use for each sprint implementation after tasks.md is approved. Reads tasks.md,
+  negotiates a sprint contract with Evaluator, implements features, commits, and
+  updates claude-progress.txt.
 tools: Read, Write, Edit, Bash, Agent
 model: claude-sonnet-4-6
 ---
-You are a senior full-stack engineer. You build one sprint at a time with
-discipline.
+You are a senior full-stack engineer running the IMPLEMENT phase from AGENTS.md.
 
 Startup ritual (mandatory, every session):
-1. pwd
-2. cat claude-progress.txt
-3. git log --oneline -10
-4. Review planner-spec.json for next incomplete sprint
-5. bash init.sh
-6. Run smoke test — open app, perform one core action, verify it works
-7. Only then proceed
+1. cat claude-progress.txt
+2. git log --oneline -10
+3. cat specs/[NNN-feature]/tasks.md | grep -v "✅"
+4. bash init.sh
+5. Run smoke test — open app, perform one core action, verify it works
+6. Only then begin sprint
 
 Sprint workflow:
-1. Propose sprint-contract.md (features + success criteria + test steps)
-2. Wait for evaluator sign-off (or negotiate until agreed)
-3. Implement sprint features
-4. Self-evaluate: manually verify each contract criterion
-5. git commit -m "feat(sprint-N): <concise description>"
-6. Update claude-progress.txt with sprint summary
+1. Propose sprint-contract.md (tasks + success criteria + Evaluator test steps)
+2. Wait for Evaluator sign-off (negotiate until agreed)
+3. Implement tasks against contract
+4. Self-evaluate: verify each contract criterion manually
+5. git commit -m "feat([NNN]): <concise description>"
+6. Mark completed tasks ✅ in tasks.md; update claude-progress.txt
 7. Invoke evaluator subagent
 
 Hard rules:
-- Never mark complete without Evaluator pass
+- Never mark a task ✅ without Evaluator pass
 - Never remove or edit tests
 - Use git revert (not patch) when recovering from broken state
-- Leave codebase in clean-state after every commit
+- Leave codebase in clean state after every commit
 ```
 
 ### `.claude/agents/evaluator.md`
@@ -116,7 +129,8 @@ tools: Read, Write, mcp__playwright__navigate, mcp__playwright__screenshot,
        mcp__playwright__click, mcp__playwright__fill, mcp__playwright__evaluate
 model: claude-opus-4-6
 ---
-You are a skeptical QA engineer and design critic. Your default is FAIL.
+You are a skeptical QA engineer and design critic running the CHECK phase from AGENTS.md.
+Your default is FAIL.
 
 Evaluation process:
 1. Read sprint-contract.md to understand what was promised
@@ -125,11 +139,11 @@ Evaluation process:
 4. Screenshot key states as evidence
 5. Score each rubric dimension (see below)
 6. Write eval-result-{N}.md with scores, evidence, and detailed critique
-7. If ALL thresholds pass → write "SPRINT PASS" and notify generator
-8. If ANY threshold fails → write "SPRINT FAIL", provide specific critique,
-   return control to generator for revision
+7a. ALL thresholds pass → write "SPRINT PASS"; mark tasks ✅; notify Generator
+7b. ANY threshold fails → write "SPRINT FAIL"; provide specific critique;
+    return control to Generator for revision
 
-Rubric:
+Rubric (mirrors AGENTS.md):
   Design quality  (weight 30%, threshold ≥ 7/10)
     Coherent visual identity; mood is intentional and consistent
   Originality     (weight 30%, threshold ≥ 6/10)
@@ -140,7 +154,8 @@ Rubric:
     All contracted features work end-to-end; failing this always fails sprint
 
 Calibration rule: be harder on Originality than you think is fair.
-The model defaults to safe; your job is to push it toward creative risk.
+
+After ALL tasks in tasks.md are ✅, run /speckit.analyze on the full feature.
 ```
 
 ---
@@ -173,7 +188,7 @@ Configure in `.claude/settings.json` or pass via `--mcp-config`.
     "PostToolUse": [
       {
         "matcher": "Bash(git commit*)",
-        "hooks": [{ "type": "command", "command": "echo '✓ Committed — update claude-progress.txt next'" }]
+        "hooks": [{ "type": "command", "command": "echo '✓ Committed — mark tasks ✅ and update claude-progress.txt next'" }]
       }
     ],
     "Stop": [
@@ -207,9 +222,9 @@ echo "✓ Clean state confirmed"
 
 `.claude/commands/new-sprint.md` — Start a sprint negotiation:
 ```
-Invoke the generator subagent to propose a sprint contract for sprint $ARGUMENTS
-from planner-spec.json, then invoke the evaluator subagent to review it.
-Do not write any code until both have signed off.
+Invoke the generator subagent to propose a sprint contract for the next
+incomplete task in specs/[NNN-feature]/tasks.md, then invoke the evaluator
+subagent to review it. Do not write any code until both have signed off.
 ```
 
 `.claude/commands/eval.md` — Trigger evaluation on current sprint:
@@ -221,7 +236,7 @@ Write results to eval-result-$ARGUMENTS.md.
 
 `.claude/commands/status.md` — Session orientation:
 ```
-Run: cat claude-progress.txt && git log --oneline -10 && cat planner-spec.json | python3 -c "import sys,json; s=json.load(sys.stdin); [print(f'Sprint {x[\"id\"]}: {x[\"title\"]}') for x in s['sprints']]"
+Run: cat claude-progress.txt && git log --oneline -10 && find specs -name tasks.md | xargs grep -l "" | head -5 | xargs -I{} sh -c 'echo "=== {} ===" && cat {}'
 ```
 
 ---
@@ -241,11 +256,18 @@ agent = client.beta.agents.create(
 )
 ```
 
-State lives in **artifacts** (files), not in conversation memory:
-- `planner-spec.json` — source of truth
-- `claude-progress.txt` — session handoff log
-- `eval-result-{N}.md` — evaluation history
-- `sprint-contract.md` — current sprint definition
+State lives in **artifacts** (files), not in conversation memory — mirrors AGENTS.md:
+
+| File | Owner | Purpose |
+|------|-------|---------|
+| `memory/constitution.md` | Team | Non-negotiable project principles |
+| `specs/[NNN]/spec.md` | Planner | What and why — source of truth |
+| `specs/[NNN]/plan.md` | Planner | How — technical decisions |
+| `specs/[NNN]/tasks.md` | Planner | Task list with ✅ completion state |
+| `specs/[NNN]/contracts/` | Planner | API contracts and interface specs |
+| `sprint-contract.md` | Generator+Evaluator | Current sprint definition of done |
+| `claude-progress.txt` | Generator | Cross-session handoff log |
+| `eval-result-{N}.md` | Evaluator | Per-sprint critique and scores |
 
 ---
 
@@ -271,3 +293,4 @@ Simpler harness + stronger model > complex harness + weaker model.
 - `tools:` in subagent frontmatter is an allowlist; omit to inherit all parent tools
 - CLAUDE.md loads before every conversation; keep it under 300 lines
 - `settings.json` is the right place for deterministic harness rules; CLAUDE.md is for context
+- When CLAUDE.md and AGENTS.md appear to conflict, AGENTS.md wins
